@@ -66,6 +66,25 @@ CONJUNCTIONS = {"but", "and", "so", "or", "because", "however", "though"}
 
 DENSITIES = tuple(DENSITY_PROBS.keys())
 
+# matches indent + marker + space + body
+#   markers: -, *, +, • – — ‣ ▪ ▸ ●, or numbered like "1.", "12)", "iv."
+_LIST_RE = re.compile(
+    r"^(?P<indent>\s*)"
+    r"(?P<marker>[-*+•–—‣▪▸●]"
+    r"|\d+[.)]"
+    r"|[a-zA-Z][.)])"
+    r"\s+(?P<body>.*\S)\s*$"
+)
+
+
+def split_list_marker(line: str):
+    """Return (prefix, body) if the line starts with a list marker, else None.
+    prefix preserves indentation + marker + the single separating space."""
+    m = _LIST_RE.match(line)
+    if not m:
+        return None
+    return f"{m.group('indent')}{m.group('marker')} ", m.group("body")
+
 
 def is_header_like(line: str) -> bool:
     stripped = line.strip()
@@ -184,6 +203,11 @@ def humanize_text(text: str, density: str = "med") -> str:
     for line in text.splitlines():
         if is_header_like(line):
             out_lines.append(line)
+            continue
+        marker_split = split_list_marker(line)
+        if marker_split is not None:
+            prefix, body = marker_split
+            out_lines.append(prefix + humanize_paragraph(body, probs))
         else:
             out_lines.append(humanize_paragraph(line, probs))
     return "\n".join(out_lines)

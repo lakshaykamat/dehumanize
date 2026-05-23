@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% set active_tab = 'humanize' %}
+{% block title %}Humanize — AI Detector{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-xl font-semibold text-ink-100">Humanize</h1>
+  <p class="text-sm text-ink-500 mt-1">Rewrite AI-generated text with natural cadence.</p>
+</div>
+
+<form method="post" action="/humanize" class="space-y-5">
+  <div>
+    <label for="text" class="block text-xs font-medium uppercase tracking-wider text-ink-500 mb-2">Text</label>
+    <textarea id="text" name="text" rows="10" required
+              class="w-full rounded-md bg-ink-900 border border-ink-800 focus:border-ink-500 focus:ring-0 outline-none p-3 text-sm text-ink-100 placeholder-ink-500/70 font-mono leading-relaxed transition"
+              placeholder="Paste text here…">{{ input_text or "" }}</textarea>
+  </div>
+
+  <div class="grid sm:grid-cols-[1fr,160px,140px] gap-3 items-end">
+    <div>
+      <label class="block text-xs font-medium uppercase tracking-wider text-ink-500 mb-2">Density</label>
+      <div class="flex gap-0.5 rounded-md bg-ink-900 border border-ink-800 p-0.5">
+        {% for d in densities %}
+        <label class="flex-1">
+          <input type="radio" name="density" value="{{ d }}" class="peer sr-only"
+                 {% if d == default_density %}checked{% endif %}>
+          <div class="text-center text-sm py-1.5 rounded cursor-pointer text-ink-500 hover:text-ink-100 peer-checked:bg-ink-800 peer-checked:text-ink-100 transition capitalize">
+            {{ d }}
+          </div>
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div>
+      <label for="seed" class="block text-xs font-medium uppercase tracking-wider text-ink-500 mb-2">Seed</label>
+      <input id="seed" type="text" name="seed" inputmode="numeric" pattern="[0-9]*"
+             value="{{ seed or '' }}"
+             class="w-full rounded-md bg-ink-900 border border-ink-800 focus:border-ink-500 focus:ring-0 outline-none px-3 py-2 text-sm text-ink-100 placeholder-ink-500/70 transition"
+             placeholder="random">
+    </div>
+
+    <button type="submit"
+            class="rounded-md bg-ink-100 hover:bg-white text-ink-950 font-medium text-sm py-2 transition">
+      Humanize
+    </button>
+  </div>
+</form>
+
+{% if result %}
+<section class="mt-8">
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-ink-500">Result</h2>
+    <button onclick="copyResult(this)" class="text-xs text-ink-500 hover:text-ink-100 transition">Copy</button>
+  </div>
+  <pre id="result" class="rounded-md bg-ink-900 border border-ink-800 p-4 text-sm text-ink-100 whitespace-pre-wrap font-mono leading-relaxed">{{ result }}</pre>
+</section>
+
+<script>
+  function copyResult(btn) {
+    const el = document.getElementById('result');
+    navigator.clipboard.writeText(el.innerText);
+    const t = btn.textContent;
+    btn.textContent = 'Copied';
+    setTimeout(() => btn.textContent = t, 1200);
+  }
+</script>
+{% endif %}
+{% endblock %}

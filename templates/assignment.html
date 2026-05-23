@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% set active_tab = 'assignment' %}
+{% block title %}Assignment — AI Detector{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-xl font-semibold text-ink-100">Assignment</h1>
+  <p class="text-sm text-ink-500 mt-1">Each question gets answered, humanized, and bundled into one PDF.</p>
+</div>
+
+<form id="assignment-form" method="post" action="/assignment" class="space-y-6" novalidate>
+  <div>
+    <div class="flex items-center justify-between mb-2">
+      <label class="block text-xs font-medium uppercase tracking-wider text-ink-500">Questions</label>
+      <span class="text-xs text-ink-500">word count can be a number (e.g. 300) or range (e.g. 400-500)</span>
+    </div>
+
+    <div id="questions" class="space-y-2">
+      <!-- rows injected by JS -->
+    </div>
+
+    <div class="mt-3 flex items-center justify-between">
+      <button type="button" id="add-row"
+              class="text-sm text-ink-300 hover:text-ink-100 transition inline-flex items-center gap-1.5">
+        <span class="text-base leading-none">+</span> Add question
+      </button>
+      <span id="count" class="text-xs text-ink-500"></span>
+    </div>
+  </div>
+
+  <div>
+    <label for="title" class="block text-xs font-medium uppercase tracking-wider text-ink-500 mb-2">PDF title</label>
+    <input id="title" type="text" name="title" value="{{ defaults.title }}"
+           class="w-full rounded-md bg-ink-900 border border-ink-800 focus:border-ink-500 focus:ring-0 outline-none px-3 py-2 text-sm text-ink-100 transition">
+  </div>
+
+  <div id="form-error" class="hidden rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm text-red-300"></div>
+
+  <div class="pt-2 flex items-center gap-3">
+    <button type="submit"
+            id="submit-btn"
+            class="rounded-md bg-ink-100 hover:bg-white text-ink-950 font-medium text-sm px-5 py-2 transition">
+      Generate PDF
+    </button>
+    <span class="text-xs text-ink-500">Generation can take 30s – 2 min.</span>
+  </div>
+</form>
+
+<template id="row-template">
+  <div class="row group grid grid-cols-[1fr,128px,32px] gap-2 items-start">
+    <input type="text" name="question"
+           placeholder="Question"
+           class="rounded-md bg-ink-900 border border-ink-800 focus:border-ink-500 focus:ring-0 outline-none px-3 py-2 text-sm text-ink-100 placeholder-ink-500/70 transition">
+    <input type="text" name="words"
+           placeholder="300 or 400-500"
+           class="rounded-md bg-ink-900 border border-ink-800 focus:border-ink-500 focus:ring-0 outline-none px-3 py-2 text-sm text-ink-100 placeholder-ink-500/70 font-mono transition">
+    <button type="button" data-remove
+            class="h-9 w-8 rounded-md text-ink-500 hover:text-red-400 hover:bg-ink-850 transition flex items-center justify-center"
+            aria-label="Remove">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+    </button>
+  </div>
+</template>
+
+<!-- Confirmation modal -->
+<div id="confirm-modal" class="hidden fixed inset-0 z-50 items-center justify-center">
+  <div id="confirm-backdrop" class="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
+  <div class="relative w-full max-w-lg mx-4 rounded-lg bg-ink-900 border border-ink-800 shadow-2xl overflow-hidden">
+    <div class="px-5 py-4 border-b border-ink-800">
+      <h2 class="text-base font-semibold text-ink-100">Confirm generation</h2>
+      <p class="text-xs text-ink-500 mt-1">Review the details before generating the PDF.</p>
+    </div>
+
+    <div class="px-5 py-4 space-y-4 max-h-[60vh] overflow-y-auto">
+      <div>
+        <div class="text-xs font-medium uppercase tracking-wider text-ink-500 mb-1">PDF title</div>
+        <div id="summary-title" class="text-sm text-ink-100 break-words"></div>
+      </div>
+      <div>
+        <div class="flex items-baseline justify-between mb-2">
+          <div class="text-xs font-medium uppercase tracking-wider text-ink-500">Questions</div>
+          <div id="summary-count" class="text-xs text-ink-500"></div>
+        </div>
+        <ol id="summary-list" class="space-y-2 text-sm text-ink-100 list-decimal pl-5 marker:text-ink-500"></ol>
+      </div>
+    </div>
+
+    <div class="px-5 py-3 border-t border-ink-800 flex items-center justify-end gap-2 bg-ink-900/50">
+      <button type="button" id="confirm-cancel"
+              class="rounded-md px-3 py-1.5 text-sm text-ink-300 hover:text-ink-100 hover:bg-ink-850 transition">
+        Cancel
+      </button>
+      <button type="button" id="confirm-ok"
+              class="rounded-md bg-ink-100 hover:bg-white text-ink-950 font-medium text-sm px-4 py-1.5 transition">
+        Confirm &amp; Generate
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const list = document.getElementById('questions');
+  const tpl = document.getElementById('row-template');
+  const countEl = document.getElementById('count');
+  const form = document.getElementById('assignment-form');
+  const submitBtn = document.getElementById('submit-btn');
+  const errorBox = document.getElementById('form-error');
+
+  const modal = document.getElementById('confirm-modal');
+  const summaryTitle = document.getElementById('summary-title');
+  const summaryList = document.getElementById('summary-list');
+  const summaryCount = document.getElementById('summary-count');
+
+  function refreshCount() {
+    const n = list.querySelectorAll('.row').length;
+    countEl.textContent = n === 1 ? '1 question' : `${n} questions`;
+    list.querySelectorAll('[data-remove]').forEach(b => b.disabled = n <= 1);
+  }
+
+  function addRow(question = '', words = '') {
+    const node = tpl.content.firstElementChild.cloneNode(true);
+    const [q, w] = node.querySelectorAll('input');
+    q.value = question;
+    w.value = words;
+    node.querySelector('[data-remove]').addEventListener('click', () => {
+      if (list.querySelectorAll('.row').length > 1) {
+        node.remove();
+        refreshCount();
+      }
+    });
+    list.appendChild(node);
+    refreshCount();
+  }
+
+  document.getElementById('add-row').addEventListener('click', () => addRow());
+  addRow();
+
+  function clearFieldErrors() {
+    form.querySelectorAll('.field-error').forEach(el => {
+      el.classList.remove('field-error', 'border-red-500/60');
+      el.classList.add('border-ink-800');
+    });
+  }
+
+  function markError(input) {
+    input.classList.add('field-error', 'border-red-500/60');
+    input.classList.remove('border-ink-800');
+  }
+
+  function showError(msg) {
+    errorBox.textContent = msg;
+    errorBox.classList.remove('hidden');
+  }
+
+  function hideError() {
+    errorBox.classList.add('hidden');
+    errorBox.textContent = '';
+  }
+
+  // word count: "300" or "400-500" (positive ints, low <= high)
+  function validWords(s) {
+    s = s.trim();
+    if (/^\d+$/.test(s)) return parseInt(s, 10) > 0;
+    const m = s.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (!m) return false;
+    const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+    return a > 0 && b > 0 && a <= b;
+  }
+
+  function validate() {
+    clearFieldErrors();
+    hideError();
+    const rows = [...list.querySelectorAll('.row')];
+    const items = [];
+    let firstBad = null;
+
+    for (const row of rows) {
+      const [q, w] = row.querySelectorAll('input');
+      const qv = q.value.trim();
+      const wv = w.value.trim();
+      let rowOk = true;
+      if (!qv) { markError(q); rowOk = false; firstBad ??= q; }
+      if (!wv || !validWords(wv)) { markError(w); rowOk = false; firstBad ??= w; }
+      if (rowOk) items.push({ question: qv, words: wv });
+    }
+
+    if (items.length === 0) {
+      showError('Add at least one question with a valid word count (e.g. 300 or 400-500).');
+      firstBad?.focus();
+      return null;
+    }
+    if (firstBad) {
+      showError('Some rows are invalid. Fix the highlighted fields.');
+      firstBad.focus();
+      return null;
+    }
+    return items;
+  }
+
+  function openModal(items) {
+    summaryTitle.textContent = document.getElementById('title').value.trim() || '(untitled)';
+    summaryCount.textContent = items.length === 1 ? '1 question' : `${items.length} questions`;
+    summaryList.innerHTML = '';
+    for (const it of items) {
+      const li = document.createElement('li');
+      li.className = 'pl-1';
+      const q = document.createElement('div');
+      q.className = 'text-ink-100';
+      q.textContent = it.question;
+      const w = document.createElement('div');
+      w.className = 'text-xs text-ink-500 font-mono mt-0.5';
+      w.textContent = `${it.words} words`;
+      li.appendChild(q);
+      li.appendChild(w);
+      summaryList.appendChild(li);
+    }
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+  }
+
+  function closeModal() {
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+  }
+
+  document.getElementById('confirm-cancel').addEventListener('click', closeModal);
+  document.getElementById('confirm-backdrop').addEventListener('click', closeModal);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeModal();
+  });
+
+  document.getElementById('confirm-ok').addEventListener('click', () => {
+    closeModal();
+    submitBtn.disabled = true;
+    submitBtn.classList.add('opacity-60', 'cursor-wait');
+    submitBtn.textContent = 'Generating…';
+    form.submit();
+  });
+
+  form.addEventListener('submit', e => {
+    e.preventDefault();
+    const items = validate();
+    if (items) openModal(items);
+  });
+</script>
+{% endblock %}

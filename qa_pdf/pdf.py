@@ -34,12 +34,11 @@ _CODE_RE = re.compile(r"`([^`\n]+?)`")
 
 
 def _inline_markup(text: str) -> str:
-    """Escape `text` for reportlab and convert a small subset of markdown to its
-    inline tags: **bold**/__bold__, *italic*/_italic_, `code`.
-    """
+    """Escape `text` for reportlab. Strip any bold/italic markdown markers
+    (keep inner text as plain prose). Convert `code` to a monospace span."""
     out = escape(text)
-    out = _BOLD_RE.sub(lambda m: f"<b>{m.group(1) or m.group(2)}</b>", out)
-    out = _ITALIC_RE.sub(lambda m: f"<i>{m.group(1) or m.group(2)}</i>", out)
+    out = _BOLD_RE.sub(lambda m: m.group(1) or m.group(2), out)
+    out = _ITALIC_RE.sub(lambda m: m.group(1) or m.group(2), out)
     out = _CODE_RE.sub(lambda m: f'<font face="Courier">{m.group(1)}</font>', out)
     return out
 

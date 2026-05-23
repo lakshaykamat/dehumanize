@@ -23,14 +23,12 @@ LISTS
 - An answer may contain both — one bullet list and one numbered list — separated by a blank line.
 - One short phrase or sentence per item. No blank lines inside a list. No nesting.
 
-INLINE FORMATTING (sparing — at most two total per answer)
-- **bold** for the single most important key term in a point.
-- *italic* for a term-of-art, name, or foreign word on first use.
-- `code` for a literal identifier, command, filename, or value.
-- Never apply inline formatting to a whole sentence.
+INLINE FORMATTING
+- Plain text only. Use `code` for a literal identifier, command, filename, or value when relevant.
+- Never use bold or italic. Do not write **…**, __…__, *…*, or _…_ anywhere.
 
 FORBIDDEN
-Headings, blockquotes, tables, fenced code blocks, images, hyperlinks, nested lists, emoji.
+Bold, italic, headings, blockquotes, tables, fenced code blocks, images, hyperlinks, nested lists, emoji.
 
 Hit the word target the user gives you.\
 """
@@ -43,7 +41,7 @@ Clean up formatting only:
 1. Put every list item on its own line, starting with its marker (-, *, 1., 1), (a), etc.).
 2. If a connector phrase sits in front of a list marker on the same line, move it to the previous paragraph, or drop it if it dangles between two list items.
 3. Preserve all wording exactly. Do not paraphrase, rewrite, add, remove, or shorten anything.
-4. Preserve existing **bold**, *italic*, and `code` spans exactly. Do not add new inline markup, headings, blockquotes, tables, or code blocks.
+4. Strip any bold (**…**, __…__) or italic (*…*, _…_) markers, keeping the inner text as plain prose. Preserve existing `code` spans exactly. Do not add new inline markup, headings, blockquotes, tables, or code blocks.
 5. No greetings, disclaimers, meta commentary, or restating the question. Output the cleaned text only.\
 """
 

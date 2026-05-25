@@ -82,8 +82,8 @@ app = FastAPI(title="AI Detector — humanize + Q&A PDF")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 static_dir = BASE_DIR / "static"
-static_dir.mkdir(exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+if static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
 # --- request models ---------------------------------------------------------

@@ -1,4 +1,4 @@
-"""High-level orchestration: validate → generate → reformat → render."""
+"""High-level orchestration: validate → generate (writer + format + humanize) → render."""
 
 from __future__ import annotations
 
@@ -15,18 +15,8 @@ from .config import (
 from .generator import generate_answers, make_client
 from .loader import validate_input
 from .pdf import build_pdf
-from .types import ProgressFn, QAPair
-
-
-def humanize_pairs(
-    qa_pairs: list[QAPair],
-    *,
-    density: str = DEFAULT_HUMANIZE_DENSITY,
-    seed: int | None = None,
-) -> list[QAPair]:
-    """Run each answer through the humanize pipeline. Questions are untouched."""
-    return [(spec, humanize_pipeline(answer, density=density, seed=seed))
-            for spec, answer in qa_pairs]
+from .reformatter import reformat_answer
+from .types import ProgressFn
 
 
 def questions_to_pdf(
@@ -40,19 +30,28 @@ def questions_to_pdf(
     humanize_density: str = DEFAULT_HUMANIZE_DENSITY,
     humanize_seed: int | None = None,
     concurrency: int = DEFAULT_CONCURRENCY,
+    reformat: bool = True,
 ) -> int:
-    """End-to-end: validate JSON → ask OpenAI (with humanize-aware word retry)
+    """End-to-end: validate JSON → ask OpenAI (writer → formatter → humanize)
     → write PDF. Returns the QA count.
 
-    Humanize always runs INSIDE the retry loop so the word count check sees
-    the post-humanize text. Inflation from filler words is therefore included
-    in the target range.
+    Per question: writer produces clean prose, formatter (LLM) restructures it
+    into markdown, then the markdown-aware humanizer injects filler ONLY into
+    prose and bullet bodies (headings, table rows, and bold labels stay clean).
+    The composed transform runs inside the retry loop so the word-count check
+    sees the final humanized text.
     """
     specs = validate_input(input_path)
     client = make_client()
 
     def transform(text: str) -> str:
+        if reformat:
+            try:
+                text = reformat_answer(client, model, text)
+            except Exception:
+                pass  # keep unformatted text if the format pass fails
         return humanize_pipeline(text, density=humanize_density, seed=humanize_seed)
+
     initial_inflation = INFLATION_GUESS.get(humanize_density, 1.0)
 
     qa_pairs = generate_answers(

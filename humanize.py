@@ -76,6 +76,9 @@ _LIST_RE = re.compile(
     r"\s+(?P<body>.*\S)\s*$"
 )
 
+# matches a leading "**Label:** " bold-label prefix (label has no inner ** or newline)
+_LABEL_RE = re.compile(r"^(\*\*[^*\n]+?:\*\*)\s+")
+
 
 def split_list_marker(line: str):
     """Return (prefix, body) if the line starts with a list marker, else None.
@@ -84,6 +87,15 @@ def split_list_marker(line: str):
     if not m:
         return None
     return f"{m.group('indent')}{m.group('marker')} ", m.group("body")
+
+
+def split_label_prefix(text: str):
+    """If text starts with `**Label:** `, return (label_prefix, body). Else None.
+    The label_prefix INCLUDES the trailing space, so concatenation is lossless."""
+    m = _LABEL_RE.match(text)
+    if not m:
+        return None
+    return m.group(0), text[m.end():]
 
 
 def is_header_like(line: str) -> bool:
@@ -97,6 +109,11 @@ def is_header_like(line: str) -> bool:
     if len(stripped) < 60 and stripped[-1] not in ".!?":
         return True
     return False
+
+
+def is_table_row(line: str) -> bool:
+    """Markdown table row: starts with `|` (header, separator `|---|`, or body)."""
+    return line.lstrip().startswith("|")
 
 
 def split_sentences(text: str):
@@ -195,21 +212,35 @@ def humanize_paragraph(paragraph: str, probs: dict) -> str:
     return " ".join(humanize_sentence(s, probs, used_fillers) for s in sentences)
 
 
+def _humanize_body(text: str, probs: dict) -> str:
+    """Humanize `text`, peeling any leading `**Label:**` so the label stays clean."""
+    label_split = split_label_prefix(text)
+    if label_split is None:
+        return humanize_paragraph(text, probs)
+    label_prefix, body = label_split
+    return label_prefix + humanize_paragraph(body, probs)
+
+
 def humanize_text(text: str, density: str = "med") -> str:
     if density not in DENSITY_PROBS:
         raise ValueError(f"Unknown density {density!r}. Choose from {DENSITIES}.")
     probs = DENSITY_PROBS[density]
     out_lines = []
+    # Markdown structural lines (headings, table rows, stand-alone bold labels)
+    # are preserved verbatim. Bullets and top-level lines starting with
+    # `**Label:**` keep the label clean and humanize only the body after it.
     for line in text.splitlines():
-        if is_header_like(line):
+        if is_header_like(line) or is_table_row(line):
             out_lines.append(line)
             continue
         marker_split = split_list_marker(line)
         if marker_split is not None:
             prefix, body = marker_split
-            out_lines.append(prefix + humanize_paragraph(body, probs))
-        else:
-            out_lines.append(humanize_paragraph(line, probs))
+            out_lines.append(prefix + _humanize_body(body, probs))
+            continue
+        stripped = line.lstrip()
+        indent = line[: len(line) - len(stripped)]
+        out_lines.append(indent + _humanize_body(stripped, probs))
     return "\n".join(out_lines)
 
 

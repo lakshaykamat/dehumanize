@@ -1,4 +1,4 @@
-"""Public types for the qa_pdf pipeline."""
+"""Public types for the qa pipeline."""
 
 from __future__ import annotations
 

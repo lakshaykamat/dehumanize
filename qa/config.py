@@ -1,4 +1,4 @@
-"""Constants and defaults for the qa_pdf pipeline."""
+"""Constants and defaults for the qa pipeline."""
 
 DEFAULT_MODEL = "gpt-5.2"
 DEFAULT_TEMPERATURE = 0.3

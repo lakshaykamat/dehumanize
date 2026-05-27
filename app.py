@@ -1,4 +1,4 @@
-"""FastAPI web app exposing the humanize and qa-pdf pipelines.
+"""FastAPI web app exposing the humanize and qa pipelines.
 
 Run:
     uvicorn app:app --reload --port 8000
@@ -8,9 +8,9 @@ Endpoints:
     GET  /humanize         humanize form
     POST /humanize         form submit → result page
     GET  /assignment       assignment form
-    POST /assignment       form submit → PDF download
+    POST /assignment       form submit → Markdown download
     POST /api/humanize     JSON in/out
-    POST /api/assignment   JSON in, PDF binary out
+    POST /api/assignment   JSON in, Markdown file out
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from humanize import DENSITIES, humanize_pipeline
-from qa_pdf import (
+from qa import (
     DEFAULT_CONCURRENCY,
     DEFAULT_HUMANIZE_DENSITY,
     DEFAULT_MODEL,
@@ -42,13 +42,13 @@ from qa_pdf import (
     MissingAPIKeyError,
     ProgressEvent,
     TokenUsage,
-    build_pdf,
+    build_md,
     generate_answers,
     make_client,
-    reformat_pairs,
+    reformat_answer,
     read_questions,
 )
-from qa_pdf.types import QuestionSpec
+from qa.types import QuestionSpec
 
 
 logging.basicConfig(
@@ -78,7 +78,7 @@ def _load_dotenv(path: Path = BASE_DIR / ".env") -> None:
 
 _load_dotenv()
 
-app = FastAPI(title="AI Detector — humanize + Q&A PDF")
+app = FastAPI(title="AI Detector — humanize + Q&A Markdown")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 static_dir = BASE_DIR / "static"
@@ -151,14 +151,7 @@ def _on_progress(ev: ProgressEvent) -> None:
             log.warning("%s fallback kept closest (%d words, need %s)", tag, ev.words, rng)
 
 
-def _on_reformat(idx: int, tot: int, spec, before: int, after: int) -> None:
-    snippet = spec.question[:60] + ("…" if len(spec.question) > 60 else "")
-    delta = after - before
-    sign = "+" if delta >= 0 else ""
-    log.info("[reformat %d/%d] %s  words %d → %d (%s%d)", idx, tot, snippet, before, after, sign, delta)
-
-
-def _run_qa_pdf_sync(
+def _run_qa_sync(
     specs: list[QuestionSpec],
     *,
     out_path: str,
@@ -170,16 +163,26 @@ def _run_qa_pdf_sync(
     reformat: bool,
     concurrency: int,
 ) -> str:
-    """Synchronous end-to-end PDF generation. Runs off the event loop.
-    Returns the actual path written (build_pdf timestamps the filename)."""
+    """Synchronous end-to-end Markdown generation. Runs off the event loop.
+    Returns the actual path written (build_md timestamps the filename)."""
     log.info(
-        "pdf-gen start  questions=%d  model=%s  density=%s  reformat=%s  concurrency=%d",
+        "md-gen start   questions=%d  model=%s  density=%s  reformat=%s  concurrency=%d",
         len(specs), model, humanize_density, reformat, concurrency,
     )
     t0 = time.perf_counter()
     client = make_client()
 
+    # Per-question chain runs inside the retry loop so word counts reflect the
+    # final humanized output: writer → format (LLM, clean prose in) → humanize
+    # (markdown-aware, leaves headings/labels/tables untouched).
+    rf_usage = TokenUsage()
+
     def transform(text: str) -> str:
+        if reformat:
+            try:
+                text = reformat_answer(client, model, text, usage=rf_usage)
+            except Exception as e:
+                log.warning("reformat failed, keeping unformatted text: %s", e)
         return humanize_pipeline(text, density=humanize_density, seed=humanize_seed)
 
     initial_inflation = INFLATION_GUESS.get(humanize_density, 1.0)
@@ -199,28 +202,15 @@ def _run_qa_pdf_sync(
     )
     failures = sum(1 for _, a in qa_pairs if a.startswith("(Error generating answer:"))
     log.info(
-        "generate done  %d answer(s) in %.1fs  tokens=%d  failures=%d",
-        len(qa_pairs), time.perf_counter() - gen_t0, gen_usage.total_tokens, failures,
+        "generate done  %d answer(s) in %.1fs  gen_tokens=%d  fmt_tokens=%d  failures=%d",
+        len(qa_pairs), time.perf_counter() - gen_t0,
+        gen_usage.total_tokens, rf_usage.total_tokens, failures,
     )
 
-    if reformat:
-        rf_usage = TokenUsage()
-        rf_t0 = time.perf_counter()
-        qa_pairs = reformat_pairs(
-            qa_pairs, client=client, model=model,
-            progress=_on_reformat,
-            concurrency=concurrency,
-            usage=rf_usage,
-        )
-        log.info(
-            "reformat done  %d answer(s) in %.1fs  tokens=%d",
-            len(qa_pairs), time.perf_counter() - rf_t0, rf_usage.total_tokens,
-        )
-
-    written = build_pdf(out_path, qa_pairs, title=title)
+    written = build_md(out_path, qa_pairs, title=title)
     size = os.path.getsize(written) if os.path.isfile(written) else 0
     log.info(
-        "pdf-gen done   path=%s  size=%d bytes  elapsed=%.1fs",
+        "md-gen done    path=%s  size=%d bytes  elapsed=%.1fs",
         written, size, time.perf_counter() - t0,
     )
     return written
@@ -309,11 +299,11 @@ async def assignment_submit(
     )
 
     out_dir = tempfile.mkdtemp(prefix="assignment-")
-    stub_path = os.path.join(out_dir, "assignment.pdf")
+    stub_path = os.path.join(out_dir, "assignment.md")
 
     try:
         written_path = await asyncio.to_thread(
-            _run_qa_pdf_sync,
+            _run_qa_sync,
             specs,
             out_path=stub_path,
             title=title,
@@ -328,18 +318,18 @@ async def assignment_submit(
         log.error("assignment failed: missing API key")
         raise HTTPException(500, str(e))
     except Exception as e:
-        log.exception("assignment failed: PDF generation crashed")
-        raise HTTPException(500, f"PDF generation failed: {e}")
+        log.exception("assignment failed: MD generation crashed")
+        raise HTTPException(500, f"MD generation failed: {e}")
 
     if not os.path.isfile(written_path) or os.path.getsize(written_path) == 0:
-        log.error("assignment failed: produced empty PDF at %s", written_path)
-        raise HTTPException(500, "PDF generation produced no output.")
+        log.error("assignment failed: produced empty MD at %s", written_path)
+        raise HTTPException(500, "MD generation produced no output.")
 
     log.info("assignment delivered  %s (%d bytes)", written_path, os.path.getsize(written_path))
     return FileResponse(
         written_path,
-        media_type="application/pdf",
-        filename="assignment.pdf",
+        media_type="text/markdown; charset=utf-8",
+        filename="assignment.md",
     )
 
 
@@ -370,11 +360,11 @@ async def api_assignment(req: QaPdfRequest):
         raise HTTPException(400, "invalid humanize_density")
 
     out_dir = tempfile.mkdtemp(prefix="answers-")
-    stub_path = os.path.join(out_dir, "answers.pdf")
+    stub_path = os.path.join(out_dir, "answers.md")
 
     try:
         written_path = await asyncio.to_thread(
-            _run_qa_pdf_sync,
+            _run_qa_sync,
             specs,
             out_path=stub_path,
             title=req.title,
@@ -388,15 +378,15 @@ async def api_assignment(req: QaPdfRequest):
     except MissingAPIKeyError as e:
         raise HTTPException(500, str(e))
     except Exception as e:
-        raise HTTPException(500, f"PDF generation failed: {e}")
+        raise HTTPException(500, f"MD generation failed: {e}")
 
     if not os.path.isfile(written_path) or os.path.getsize(written_path) == 0:
-        raise HTTPException(500, "PDF generation produced no output.")
+        raise HTTPException(500, "MD generation produced no output.")
 
     return FileResponse(
         written_path,
-        media_type="application/pdf",
-        filename="answers.pdf",
+        media_type="text/markdown; charset=utf-8",
+        filename="answers.md",
     )
 
 

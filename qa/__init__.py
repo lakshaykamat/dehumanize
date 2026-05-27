@@ -1,7 +1,7 @@
 """Q&A → PDF pipeline.
 
 Public API surface — re-exports from the sub-modules so callers can simply
-`from qa_pdf import ...`.
+`from qa import ...`.
 
 Modules:
     config       constants and defaults
@@ -26,8 +26,11 @@ from .config import (
 )
 from .generator import ask_openai, generate_answers, make_client
 from .loader import read_questions, validate_input
+from .md import build_md
+from .md_to_pdf import md_to_pdf
 from .pdf import build_pdf
-from .pipeline import humanize_pairs, questions_to_pdf
+from .pdf_style import PdfStyle
+from .pipeline import questions_to_pdf
 from .prompts import FORMAT_SYSTEM_PROMPT, SYSTEM_PROMPT
 from .reformatter import reformat_answer, reformat_pairs
 from .types import (
@@ -51,6 +54,7 @@ __all__ = [
     "MAX_RETRIES",
     # types
     "MissingAPIKeyError",
+    "PdfStyle",
     "ProgressEvent",
     "ProgressFn",
     "QAPair",
@@ -61,9 +65,10 @@ __all__ = [
     "SYSTEM_PROMPT",
     # functions
     "ask_openai",
+    "build_md",
     "build_pdf",
+    "md_to_pdf",
     "generate_answers",
-    "humanize_pairs",
     "make_client",
     "questions_to_pdf",
     "read_questions",

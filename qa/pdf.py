@@ -1,4 +1,9 @@
-"""PDF rendering for the qa_pdf pipeline (reportlab)."""
+"""PDF rendering for the qa pipeline (reportlab).
+
+The visual look is fully driven by :class:`qa.pdf_style.PdfStyle`. Calling
+:func:`build_pdf` with no style uses the dataclass defaults (which reproduce
+the original look).
+"""
 
 from __future__ import annotations
 
@@ -7,9 +12,9 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
-from reportlab.lib.colors import HexColor, black
+from reportlab.lib.colors import HexColor
 from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
-from reportlab.lib.pagesizes import LETTER
+from reportlab.lib.pagesizes import A3, A4, A5, LEGAL, LETTER
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
@@ -20,6 +25,7 @@ from reportlab.platypus import (
 )
 
 from .config import DEFAULT_TITLE
+from .pdf_style import PdfStyle
 from .types import QAPair
 
 
@@ -31,6 +37,24 @@ _ITALIC_RE = re.compile(
     r"(?=$|[\s)\]}.,;:!?<])"
 )
 _CODE_RE = re.compile(r"`([^`\n]+?)`")
+_HEADING_RE = re.compile(r"^\s*(#{3,4})\s+(.+?)\s*#*\s*$")
+
+
+_PAGE_SIZES = {
+    "letter": LETTER,
+    "a4": A4,
+    "legal": LEGAL,
+    "a3": A3,
+    "a5": A5,
+}
+
+_FONT_FAMILIES = {
+    "helvetica": ("Helvetica", "Helvetica-Bold"),
+    "times": ("Times-Roman", "Times-Bold"),
+    "courier": ("Courier", "Courier-Bold"),
+}
+
+_ALIGN = {"justify": TA_JUSTIFY, "left": TA_LEFT}
 
 
 def _inline_markup(text: str) -> str:
@@ -43,28 +67,43 @@ def _inline_markup(text: str) -> str:
     return out
 
 
-def _build_styles():
+def _build_styles(style: PdfStyle):
     base = getSampleStyleSheet()
+    regular, bold = _FONT_FAMILIES[style.font_family]
+    text = HexColor(style.text_color)
+    body_leading = style.body_size * style.line_spacing
+    answer_align = _ALIGN[style.align]
     return {
         "title": ParagraphStyle(
             "DocTitle", parent=base["Title"],
-            fontName="Helvetica-Bold", fontSize=24, leading=28,
-            textColor=black, alignment=TA_LEFT, spaceAfter=18,
+            fontName=bold, fontSize=style.title_size, leading=style.title_size * 1.17,
+            textColor=text, alignment=TA_LEFT, spaceAfter=18,
         ),
         "question": ParagraphStyle(
             "Question", parent=base["Heading2"],
-            fontName="Helvetica-Bold", fontSize=13.5, leading=18,
-            textColor=black, spaceBefore=10, spaceAfter=6, keepWithNext=True,
+            fontName=bold, fontSize=style.question_size,
+            leading=style.question_size * 1.33,
+            textColor=text, spaceBefore=10, spaceAfter=6, keepWithNext=True,
+        ),
+        "h3": ParagraphStyle(
+            "H3", parent=base["Heading3"],
+            fontName=bold, fontSize=style.h3_size, leading=style.h3_size * 1.3,
+            textColor=text, spaceBefore=8, spaceAfter=4, keepWithNext=True,
+        ),
+        "h4": ParagraphStyle(
+            "H4", parent=base["Heading4"],
+            fontName=bold, fontSize=style.h4_size, leading=style.h4_size * 1.33,
+            textColor=text, spaceBefore=6, spaceAfter=3, keepWithNext=True,
         ),
         "answer": ParagraphStyle(
             "Answer", parent=base["BodyText"],
-            fontName="Helvetica", fontSize=10.5, leading=15,
-            textColor=black, alignment=TA_JUSTIFY, spaceAfter=6,
+            fontName=regular, fontSize=style.body_size, leading=body_leading,
+            textColor=text, alignment=answer_align, spaceAfter=6,
         ),
         "bullet": ParagraphStyle(
             "Bullet", parent=base["BodyText"],
-            fontName="Helvetica", fontSize=10.5, leading=15,
-            textColor=black, alignment=TA_LEFT,
+            fontName=regular, fontSize=style.body_size, leading=body_leading,
+            textColor=text, alignment=TA_LEFT,
             leftIndent=22, bulletIndent=6, spaceAfter=2,
         ),
     }
@@ -126,6 +165,14 @@ def _paragraphize(answer: str, styles: dict) -> list:
             _flush_list(list_buf, styles, flowables)
             _flush_prose(prose_buf, styles, flowables)
             continue
+        h = _HEADING_RE.match(line)
+        if h:
+            _flush_list(list_buf, styles, flowables)
+            _flush_prose(prose_buf, styles, flowables)
+            level = len(h.group(1))
+            style_key = "h3" if level == 3 else "h4"
+            flowables.append(Paragraph(_inline_markup(h.group(2)), styles[style_key]))
+            continue
         m = _LIST_LINE.match(line)
         if m:
             _flush_prose(prose_buf, styles, flowables)
@@ -155,27 +202,37 @@ def build_pdf(
     qa_pairs: list[QAPair],
     *,
     title: str = DEFAULT_TITLE,
+    style: PdfStyle | None = None,
 ) -> str:
     """Render the Q&A pairs to a PDF. A timestamp is always appended to the
     filename so existing files are never overwritten. Returns the actual path
     written.
+
+    `style` controls every visual choice. Pass `None` (default) for the
+    standard look.
     """
+    style = style or PdfStyle()
     output_path = _timestamped(output_path)
+    margin = style.margin_inches * inch
     doc = SimpleDocTemplate(
-        output_path, pagesize=LETTER,
-        leftMargin=0.85 * inch, rightMargin=0.85 * inch,
-        topMargin=0.85 * inch, bottomMargin=0.85 * inch,
+        output_path, pagesize=_PAGE_SIZES[style.page_size],
+        leftMargin=margin, rightMargin=margin,
+        topMargin=margin, bottomMargin=margin,
         title=title,
     )
-    styles = _build_styles()
+    styles = _build_styles(style)
     story = [Paragraph(escape(title), styles["title"])]
+
+    separator_color = HexColor(style.separator_color)
 
     for idx, (spec, a) in enumerate(qa_pairs, start=1):
         story.append(Paragraph(f"{idx}. {_inline_markup(spec.question)}", styles["question"]))
         story.extend(_paragraphize(a, styles))
-        if idx != len(qa_pairs):
+        if idx != len(qa_pairs) and style.show_separator:
             story.append(Spacer(1, 8))
-            story.append(HRFlowable(width="40%", thickness=0.4, color=HexColor("#e2e8f0"), spaceAfter=10))
+            story.append(HRFlowable(width="40%", thickness=0.4, color=separator_color, spaceAfter=10))
+        elif idx != len(qa_pairs):
+            story.append(Spacer(1, 12))
 
     doc.build(story)
     return output_path

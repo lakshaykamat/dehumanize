@@ -24,7 +24,7 @@ class PdfStyle:
 
     # --- page ---------------------------------------------------------------
     page_size: PageSize = "a4"
-    margin_inches: float = 0.5
+    margin_inches: float = 1.0
 
     # --- typography ---------------------------------------------------------
     font_family: FontFamily = "times"
@@ -40,6 +40,17 @@ class PdfStyle:
     # --- colors (hex strings, "#RRGGBB") ------------------------------------
     text_color: str = "#000000"
     separator_color: str = "#e2e8f0"
+
+    # --- code styling -------------------------------------------------------
+    code_font_family: str = "JetBrainsMono-Regular"  # monospace font for inline + block code; falls back to Courier if TTF not registered
+    inline_code_lang: str = ""             # default Pygments lexer for `inline` snippets when prose-style highlighting is disabled; "" → guess
+    inline_code_function_color: str = "#fb7185"  # salmon — used for the identifier in `name(args)` patterns inside inline code
+    inline_code_bg: str = "#1f2937"        # slate-900 highlight behind `code`
+    inline_code_color: str = "#f8fafc"     # near-white text for `code`
+    inline_code_size: float = 8.5          # inline code font size (pt) — kept small so the dark highlight band fits inside body leading without overlapping the next line
+    code_block_bg: str = "#1f2937"         # slate-900 block background
+    code_block_color: str = "#f8fafc"      # near-white code text
+    code_block_size: float = 9.5           # code block font size (pt)
 
     # --- layout choices -----------------------------------------------------
     align: Alignment = "justify"       # alignment for answer prose

@@ -126,7 +126,14 @@ def run(args) -> int:
     step(3, total_steps, f"generating answers (+ humanize density={args.humanize_density})")
 
     def transform(text: str) -> str:
-        return humanize_pipeline(text, density=args.humanize_density, seed=args.humanize_seed)
+        humanized = humanize_pipeline(text, density=args.humanize_density, seed=args.humanize_seed)
+        log(
+            f"\n{DIM}── ai answer ({len(text.split())} words) ──{RESET}\n"
+            f"{text}\n"
+            f"{DIM}── humanized ({len(humanized.split())} words) ──{RESET}\n"
+            f"{humanized}\n"
+        )
+        return humanized
     initial_inflation = INFLATION_GUESS.get(args.humanize_density, 1.0)
 
     gen_usage = TokenUsage()

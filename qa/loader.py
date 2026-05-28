@@ -38,19 +38,27 @@ def _parse_words(value, item_idx: int, path: str) -> tuple[int, int]:
 def read_questions(path: str) -> list[QuestionSpec]:
     """Read questions from a JSON file.
 
-    Required shape — a list of objects with both fields:
+    Accepted shapes:
         [
           {"question": "What is X?", "words": "400-500"},
           {"question": "Explain Y.", "words": 450}
         ]
+
+        {"title": "...", "questions": [ ...same items... ]}
 
     `words` accepts either a range string ("400-500") or a single int.
     """
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
+    if isinstance(data, dict) and isinstance(data.get("questions"), list):
+        data = data["questions"]
+
     if not isinstance(data, list):
-        raise ValueError(f"{path}: top-level JSON must be a list of question objects.")
+        raise ValueError(
+            f"{path}: top-level JSON must be a list of question objects, "
+            f"or an object with a 'questions' list."
+        )
 
     specs: list[QuestionSpec] = []
     for i, item in enumerate(data):

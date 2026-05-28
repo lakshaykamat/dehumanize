@@ -79,6 +79,9 @@ _LIST_RE = re.compile(
 # matches a leading "**Label:** " bold-label prefix (label has no inner ** or newline)
 _LABEL_RE = re.compile(r"^(\*\*[^*\n]+?:\*\*)\s+")
 
+# matches a code-fence boundary line: ``` or ~~~ (optionally followed by lang)
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
 
 def split_list_marker(line: str):
     """Return (prefix, body) if the line starts with a list marker, else None.
@@ -106,14 +109,12 @@ def is_header_like(line: str) -> bool:
         return True
     if stripped.startswith("**") and stripped.endswith("**"):
         return True
-    if len(stripped) < 60 and stripped[-1] not in ".!?":
+    # Short labels with no sentence-like terminator (e.g. "Summary", "Conclusion").
+    # `:` and `;` count as terminators so prose lines like "Common practices include:"
+    # still flow through the humanizer.
+    if len(stripped) < 60 and stripped[-1] not in ".!?:;":
         return True
     return False
-
-
-def is_table_row(line: str) -> bool:
-    """Markdown table row: starts with `|` (header, separator `|---|`, or body)."""
-    return line.lstrip().startswith("|")
 
 
 def split_sentences(text: str):
@@ -189,7 +190,16 @@ def humanize_sentence(sentence: str, probs: dict, used_fillers: set) -> str:
     if random.random() < probs["start"]:
         starter = pick_unique("sentence_start", used_fillers)
         if starter:
-            if result and result[0].isupper() and not starter.rstrip().endswith((".", "!", "?")):
+            # Lowercase the first letter only for normally-capitalized words
+            # (e.g. "Normalization" → "normalization"). Leave acronyms ("BCNF",
+            # "SQL") and standalone capitals ("I") alone — detected by the
+            # second char NOT being a lowercase letter.
+            if (
+                result
+                and result[0].isupper()
+                and result[1:2].islower()
+                and not starter.rstrip().endswith((".", "!", "?"))
+            ):
                 result = result[0].lower() + result[1:]
             result = starter + " " + result
 
@@ -226,11 +236,26 @@ def humanize_text(text: str, density: str = "med") -> str:
         raise ValueError(f"Unknown density {density!r}. Choose from {DENSITIES}.")
     probs = DENSITY_PROBS[density]
     out_lines = []
+    fence: str | None = None
     # Markdown structural lines (headings, table rows, stand-alone bold labels)
     # are preserved verbatim. Bullets and top-level lines starting with
     # `**Label:**` keep the label clean and humanize only the body after it.
+    # Code fences (``` or ~~~) and everything between them are preserved
+    # verbatim — fillers inside code would corrupt it.
     for line in text.splitlines():
-        if is_header_like(line) or is_table_row(line):
+        m = _FENCE_RE.match(line)
+        if m:
+            delim = m.group(1)
+            if fence is None:
+                fence = delim
+            elif fence == delim:
+                fence = None
+            out_lines.append(line)
+            continue
+        if fence is not None:
+            out_lines.append(line)
+            continue
+        if is_header_like(line):
             out_lines.append(line)
             continue
         marker_split = split_list_marker(line)

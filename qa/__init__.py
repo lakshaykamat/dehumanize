@@ -24,13 +24,7 @@ from .config import (
 )
 from .generator import ask_openai, generate_answers, make_client
 from .loader import read_questions, validate_input
-from .md import (
-    apply_substitutions,
-    build_md,
-    find_placeholders,
-    load_template_text,
-    suggested_default,
-)
+from .md import build_md
 from .md_to_pdf import md_to_pdf
 from .pdf import build_pdf
 from .pdf_style import PdfStyle
@@ -65,14 +59,10 @@ __all__ = [
     # prompts
     "SYSTEM_PROMPT",
     # functions
-    "apply_substitutions",
     "ask_openai",
     "build_md",
     "build_pdf",
-    "find_placeholders",
-    "load_template_text",
     "md_to_pdf",
-    "suggested_default",
     "generate_answers",
     "make_client",
     "questions_to_pdf",

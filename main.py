@@ -7,7 +7,6 @@ Subcommands:
     md-to-pdf   Convert an existing Markdown file to PDF (no API calls).
 
 Examples:
-    python main.py                                  # interactive wizard
     python main.py humanize para.txt
     python main.py humanize para.txt -d high -s 42 -o out.txt
     cat para.txt | python main.py humanize

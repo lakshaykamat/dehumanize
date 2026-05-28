@@ -1,12 +1,10 @@
 """`md-to-pdf` subcommand — convert an existing Markdown file to PDF.
 
-Every visual knob in :class:`qa.PdfStyle` is exposed both as a CLI flag and
-as a step in the interactive wizard.
+Every visual knob in :class:`qa.PdfStyle` is exposed as a CLI flag.
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 import re
 import time
@@ -15,8 +13,7 @@ from pathlib import Path
 
 from qa import PdfStyle, md_to_pdf
 
-from ..log import DIM, GREEN, RESET, YELLOW, err, fmt_duration, kv, log, ok, section, step
-from ..prompts import ask, ask_file, ask_menu, ask_yes_no
+from ..log import DIM, GREEN, RESET, err, fmt_duration, kv, log, ok, section, step
 
 
 PAGE_SIZES = ["letter", "a4", "legal", "a3", "a5"]
@@ -37,7 +34,9 @@ def add_parser(sub) -> None:
     defaults = PdfStyle()
     p = sub.add_parser(
         "md-to-pdf",
-        help="Render an existing Markdown file as PDF (no OpenAI calls).",
+        help="Render a Markdown file as PDF (no OpenAI calls).",
+        description="Render a Markdown file as PDF. Supports the standard "
+                    "institutional layout out of the box.",
     )
     p.add_argument("input", help="Input Markdown file (e.g. answers.md).")
     p.add_argument("-o", "--output", required=True,
@@ -50,33 +49,25 @@ def add_parser(sub) -> None:
                        help=f"Page size (default: {defaults.page_size}).")
     style.add_argument("--margin", type=float, default=defaults.margin_inches,
                        metavar="INCHES",
-                       help=f"Page margin in inches, applied to all four sides (default: {defaults.margin_inches}).")
+                       help=f"Page margin in inches, all sides (default: {defaults.margin_inches}).")
     style.add_argument("--font", choices=FONT_FAMILIES, default=defaults.font_family,
                        dest="font_family",
                        help=f"Font family (default: {defaults.font_family}).")
-    style.add_argument("--body-size", type=float, default=defaults.body_size,
-                       metavar="PT",
+    style.add_argument("--body-size", type=float, default=defaults.body_size, metavar="PT",
                        help=f"Body text size in points (default: {defaults.body_size}).")
-    style.add_argument("--line-spacing", type=float, default=defaults.line_spacing,
-                       metavar="MULT",
-                       help=f"Line-height multiplier for body text (default: {defaults.line_spacing}).")
-    style.add_argument("--title-size", type=float, default=defaults.title_size,
-                       metavar="PT",
+    style.add_argument("--line-spacing", type=float, default=defaults.line_spacing, metavar="MULT",
+                       help=f"Line-height multiplier (default: {defaults.line_spacing}).")
+    style.add_argument("--title-size", type=float, default=defaults.title_size, metavar="PT",
                        help=f"Title size in points (default: {defaults.title_size}).")
-    style.add_argument("--question-size", type=float, default=defaults.question_size,
-                       metavar="PT",
+    style.add_argument("--question-size", type=float, default=defaults.question_size, metavar="PT",
                        help=f"Question heading size in points (default: {defaults.question_size}).")
-    style.add_argument("--h3-size", type=float, default=defaults.h3_size,
-                       metavar="PT",
+    style.add_argument("--h3-size", type=float, default=defaults.h3_size, metavar="PT",
                        help=f"H3 subheading size (default: {defaults.h3_size}).")
-    style.add_argument("--h4-size", type=float, default=defaults.h4_size,
-                       metavar="PT",
+    style.add_argument("--h4-size", type=float, default=defaults.h4_size, metavar="PT",
                        help=f"H4 subheading size (default: {defaults.h4_size}).")
-    style.add_argument("--text-color", default=defaults.text_color,
-                       metavar="HEX",
+    style.add_argument("--text-color", default=defaults.text_color, metavar="HEX",
                        help=f"Hex color for all text (default: {defaults.text_color}).")
-    style.add_argument("--separator-color", default=defaults.separator_color,
-                       metavar="HEX",
+    style.add_argument("--separator-color", default=defaults.separator_color, metavar="HEX",
                        help=f"Hex color for the line between questions (default: {defaults.separator_color}).")
     style.add_argument("--align", choices=ALIGNMENTS, default=defaults.align,
                        help=f"Answer paragraph alignment (default: {defaults.align}).")
@@ -145,129 +136,3 @@ def run(args) -> int:
 
     log(f"\n{GREEN}done{RESET} in {fmt_duration(time.perf_counter() - started)}")
     return 0
-
-
-def _ask_float(prompt: str, default: float) -> float:
-    while True:
-        raw = ask(prompt, str(default))
-        try:
-            return float(raw)
-        except ValueError:
-            log(f"  {YELLOW}please enter a number{RESET}")
-
-
-def _ask_hex(prompt: str, default: str) -> str:
-    while True:
-        raw = ask(prompt, default)
-        try:
-            return _normalize_hex(raw, prompt)
-        except ValueError as e:
-            log(f"  {YELLOW}{e}{RESET}")
-
-
-def _interactive_style() -> PdfStyle:
-    defaults = PdfStyle()
-    section("PDF style — customise (Enter to keep default)")
-
-    page_size = ask_menu(
-        "Page size",
-        [(s, s.upper()) for s in PAGE_SIZES],
-        default=defaults.page_size,
-    )
-    margin = _ask_float("Margin (inches, all sides)", defaults.margin_inches)
-
-    font_family = ask_menu(
-        "Font family",
-        [
-            ("helvetica", "clean sans-serif (default)"),
-            ("times", "classic serif"),
-            ("courier", "monospace"),
-        ],
-        default=defaults.font_family,
-    )
-    body_size = _ask_float("Body text size (pt)", defaults.body_size)
-    line_spacing = _ask_float("Line spacing multiplier (1.0 = tight, 1.5 = airy)", defaults.line_spacing)
-
-    title_size = _ask_float("Title size (pt)", defaults.title_size)
-    question_size = _ask_float("Question heading size (pt)", defaults.question_size)
-    h3_size = _ask_float("H3 subheading size (pt)", defaults.h3_size)
-    h4_size = _ask_float("H4 subheading size (pt)", defaults.h4_size)
-
-    text_color = _ask_hex("Text color (hex, e.g. #1a1a1a)", defaults.text_color)
-    separator_color = _ask_hex("Separator line color (hex)", defaults.separator_color)
-
-    align = ask_menu(
-        "Answer paragraph alignment",
-        [
-            ("justify", "fill both edges (formal)"),
-            ("left", "ragged right (casual)"),
-        ],
-        default=defaults.align,
-    )
-    show_separator = ask_yes_no("Show horizontal rule between questions?", defaults.show_separator)
-
-    return PdfStyle(
-        page_size=page_size,
-        margin_inches=margin,
-        font_family=font_family,
-        body_size=body_size,
-        line_spacing=line_spacing,
-        title_size=title_size,
-        question_size=question_size,
-        h3_size=h3_size,
-        h4_size=h4_size,
-        text_color=text_color,
-        separator_color=separator_color,
-        align=align,
-        show_separator=show_separator,
-    )
-
-
-def interactive() -> int:
-    section("Markdown → PDF — interactive setup")
-    log("Press Enter to accept each [default].\n")
-
-    input_path = ask_file(
-        "Pick the Markdown file to convert",
-        ["*.md"],
-        exclude_globs=["README*.md", "CHANGELOG*.md", "LICENSE*.md", "CONTRIBUTING*.md"],
-    )
-    default_output = f"{input_path.rsplit('.', 1)[0]}.pdf"
-    output_path = ask("Output PDF path", default_output)
-    title_override = ask("Override document title? (Enter to keep H1 from markdown)", "")
-
-    if ask_yes_no("Customise PDF style?", False):
-        style = _interactive_style()
-    else:
-        style = PdfStyle()
-
-    section("review")
-    kv("input", input_path)
-    kv("output", output_path)
-    kv("title", title_override or "(from H1 in markdown)")
-    section("style")
-    _kv_style(style)
-
-    if not ask_yes_no("\nRun with these settings?", True):
-        log(f"{YELLOW}cancelled.{RESET}")
-        return 0
-
-    args = argparse.Namespace(
-        input=input_path,
-        output=output_path,
-        title=title_override or None,
-        page_size=style.page_size,
-        margin=style.margin_inches,
-        font_family=style.font_family,
-        body_size=style.body_size,
-        line_spacing=style.line_spacing,
-        title_size=style.title_size,
-        question_size=style.question_size,
-        h3_size=style.h3_size,
-        h4_size=style.h4_size,
-        text_color=style.text_color,
-        separator_color=style.separator_color,
-        align=style.align,
-        show_separator=style.show_separator,
-    )
-    return run(args)

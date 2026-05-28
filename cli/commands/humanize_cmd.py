@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-import argparse
 import sys
 import time
 
 from humanize import DENSITIES, humanize_pipeline
 
-from ..log import GREEN, RESET, YELLOW, fmt_duration, kv, log, ok, section, step
-from ..prompts import ask, ask_file, ask_menu, ask_yes_no
+from ..log import GREEN, RESET, fmt_duration, kv, log, ok, section, step
 
 
 def add_parser(sub) -> None:
-    p = sub.add_parser("humanize", help="Humanize AI-sounding text.")
+    p = sub.add_parser(
+        "humanize",
+        help="Humanize AI-sounding text.",
+        description="Inject filler words, hedges, and connectors into text.",
+    )
     p.add_argument("input", nargs="?", help="Input text file. Reads stdin if omitted.")
     p.add_argument("-o", "--output", help="Output file. Writes stdout if omitted.")
     p.add_argument("-d", "--density", choices=DENSITIES, default="high",
@@ -64,39 +66,3 @@ def run(args) -> int:
 
     log(f"\n{GREEN}done{RESET} in {fmt_duration(time.perf_counter() - started)}")
     return 0
-
-
-def interactive() -> int:
-    section("Humanize — interactive setup")
-    log("Press Enter to accept each [default].\n")
-
-    input_path = ask_file("Pick the text file to humanize", ["*.txt", "*.md"])
-    output_path = ask("Output text path (Enter for stdout)", "")
-    density = ask_menu(
-        "Density",
-        [
-            ("low", "light filler injection"),
-            ("med", "moderate filler injection"),
-            ("high", "heavy filler injection — most evasive"),
-        ],
-        default="high",
-    )
-    seed_str = ask("Random seed (Enter for random)", "")
-    seed = int(seed_str) if seed_str.isdigit() else None
-
-    section("review")
-    kv("input", input_path)
-    kv("output", output_path or "<stdout>")
-    kv("density", density)
-    kv("seed", seed if seed is not None else "(random)")
-    if not ask_yes_no("\nRun with these settings?", True):
-        log(f"{YELLOW}cancelled.{RESET}")
-        return 0
-
-    args = argparse.Namespace(
-        input=input_path,
-        output=output_path or None,
-        density=density,
-        seed=seed,
-    )
-    return run(args)

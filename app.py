@@ -45,7 +45,6 @@ from qa import (
     build_md,
     generate_answers,
     make_client,
-    reformat_answer,
     read_questions,
 )
 from qa.types import QuestionSpec
@@ -107,7 +106,6 @@ class QaPdfRequest(BaseModel):
     temperature: float = DEFAULT_TEMPERATURE
     humanize_density: str = DEFAULT_HUMANIZE_DENSITY
     humanize_seed: int | None = None
-    reformat: bool = True
     concurrency: int = DEFAULT_CONCURRENCY
 
 
@@ -160,29 +158,20 @@ def _run_qa_sync(
     temperature: float,
     humanize_density: str,
     humanize_seed: int | None,
-    reformat: bool,
     concurrency: int,
 ) -> str:
     """Synchronous end-to-end Markdown generation. Runs off the event loop.
     Returns the actual path written (build_md timestamps the filename)."""
     log.info(
-        "md-gen start   questions=%d  model=%s  density=%s  reformat=%s  concurrency=%d",
-        len(specs), model, humanize_density, reformat, concurrency,
+        "md-gen start   questions=%d  model=%s  density=%s  concurrency=%d",
+        len(specs), model, humanize_density, concurrency,
     )
     t0 = time.perf_counter()
     client = make_client()
 
-    # Per-question chain runs inside the retry loop so word counts reflect the
-    # final humanized output: writer → format (LLM, clean prose in) → humanize
-    # (markdown-aware, leaves headings/labels/tables untouched).
-    rf_usage = TokenUsage()
-
+    # Writer+formatter run as a single model call. Humanize is markdown-aware
+    # and runs inside the retry loop so word counts reflect the final text.
     def transform(text: str) -> str:
-        if reformat:
-            try:
-                text = reformat_answer(client, model, text, usage=rf_usage)
-            except Exception as e:
-                log.warning("reformat failed, keeping unformatted text: %s", e)
         return humanize_pipeline(text, density=humanize_density, seed=humanize_seed)
 
     initial_inflation = INFLATION_GUESS.get(humanize_density, 1.0)
@@ -202,9 +191,9 @@ def _run_qa_sync(
     )
     failures = sum(1 for _, a in qa_pairs if a.startswith("(Error generating answer:"))
     log.info(
-        "generate done  %d answer(s) in %.1fs  gen_tokens=%d  fmt_tokens=%d  failures=%d",
+        "generate done  %d answer(s) in %.1fs  tokens=%d  failures=%d",
         len(qa_pairs), time.perf_counter() - gen_t0,
-        gen_usage.total_tokens, rf_usage.total_tokens, failures,
+        gen_usage.total_tokens, failures,
     )
 
     written = build_md(out_path, qa_pairs, title=title)
@@ -311,7 +300,6 @@ async def assignment_submit(
             temperature=DEFAULT_TEMPERATURE,
             humanize_density=DEFAULT_HUMANIZE_DENSITY,
             humanize_seed=None,
-            reformat=True,
             concurrency=DEFAULT_CONCURRENCY,
         )
     except MissingAPIKeyError as e:
@@ -372,7 +360,6 @@ async def api_assignment(req: QaPdfRequest):
             temperature=req.temperature,
             humanize_density=req.humanize_density,
             humanize_seed=req.humanize_seed,
-            reformat=req.reformat,
             concurrency=req.concurrency,
         )
     except MissingAPIKeyError as e:

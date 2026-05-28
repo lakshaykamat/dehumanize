@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 
 from humanize import DENSITIES, humanize_pipeline
@@ -12,7 +13,6 @@ from qa import (
     DEFAULT_CONCURRENCY,
     DEFAULT_HUMANIZE_DENSITY,
     DEFAULT_MODEL,
-    DEFAULT_REFORMAT,
     DEFAULT_TEMPERATURE,
     DEFAULT_TITLE,
     INFLATION_GUESS,
@@ -21,9 +21,11 @@ from qa import (
     ProgressEvent,
     TokenUsage,
     build_md,
+    find_placeholders,
     generate_answers,
+    load_template_text,
     make_client,
-    reformat_pairs,
+    suggested_default,
     validate_input,
 )
 
@@ -36,11 +38,13 @@ from ..log import (
     YELLOW,
     err,
     fmt_duration,
+    info,
     kv,
     log,
     ok,
     section,
     step,
+    warn,
 )
 from ..prompts import ask, ask_file, ask_menu, ask_yes_no
 
@@ -63,12 +67,12 @@ def add_parser(sub) -> None:
                    help=f"Humanize density (default: {DEFAULT_HUMANIZE_DENSITY}).")
     p.add_argument("--humanize-seed", type=int, default=None,
                    help="Seed for the humanize step (reproducibility).")
-    p.add_argument("--no-reformat", dest="reformat", action="store_false",
-                   help="Skip the AI formatting cleanup pass (default: on).")
     p.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY,
                    help=f"Max in-flight OpenAI requests "
                         f"(default: {DEFAULT_CONCURRENCY}).")
-    p.set_defaults(func=run, reformat=DEFAULT_REFORMAT)
+    p.add_argument("--no-prompt", dest="prompt_placeholders", action="store_false",
+                   help="Skip interactive prompts for cover-page placeholders like [Your Name].")
+    p.set_defaults(func=run, prompt_placeholders=True)
 
 
 def _on_progress(ev: ProgressEvent) -> None:
@@ -100,11 +104,10 @@ def run(args) -> int:
     kv("temperature", args.temperature)
     kv("title", args.title)
     kv("humanize", f"on (density={args.humanize_density}, seed={args.humanize_seed})")
-    kv("reformat", "on (OpenAI)" if args.reformat else "off")
     kv("concurrency", args.concurrency)
     kv("max retries", MAX_RETRIES)
 
-    total_steps = 5 if args.reformat else 4
+    total_steps = 4
     step(1, total_steps, "validating input")
     try:
         specs = validate_input(args.input)
@@ -153,53 +156,73 @@ def run(args) -> int:
         + (f"  {RED}({failures} failed){RESET}" if failures else "")
     )
 
-    rf_usage = TokenUsage()
-    if args.reformat:
-        step(4, total_steps, "reformatting answers (OpenAI cleanup)")
-        rf_start = time.perf_counter()
-
-        def _on_reformat(idx: int, tot: int, spec, before: int, after: int) -> None:
-            text = spec.question
-            snippet = text if len(text) <= 80 else text[:80] + "..."
-            delta = after - before
-            sign = "+" if delta >= 0 else ""
-            log(f"  {CYAN}q{idx}/{tot}{RESET} {snippet}")
-            log(f"        {GREEN}ok{RESET} words {before} → {after} ({sign}{delta})")
-
-        qa_pairs = reformat_pairs(
-            qa_pairs, client=client, model=args.model, progress=_on_reformat,
-            concurrency=args.concurrency,
-            usage=rf_usage,
-        )
-        ok(f"reformatted {len(qa_pairs)} answer(s) in {fmt_duration(time.perf_counter() - rf_start)}")
+    substitutions = _collect_cover_page_values(
+        prompt=getattr(args, "prompt_placeholders", True),
+    )
 
     step(total_steps, total_steps, "rendering Markdown")
     md_start = time.perf_counter()
-    written_path = build_md(args.output, qa_pairs, title=args.title)
+    written_path = build_md(args.output, qa_pairs, title=args.title, substitutions=substitutions)
     ok(f"{written_path} — {len(qa_pairs)} Q&A in {fmt_duration(time.perf_counter() - md_start)}")
 
-    _print_token_summary(gen_usage, rf_usage)
+    _print_token_summary(gen_usage)
     log(f"\n{GREEN}done{RESET} in {fmt_duration(time.perf_counter() - started)}")
     return 0
 
 
-def _print_token_summary(gen: TokenUsage, rf: TokenUsage) -> None:
-    total = gen.merged(rf)
-    rows = [("generate", gen), ("reformat", rf), ("total", total)]
-    label_w = max(len(name) for name, _ in rows)
-    num_w = max(len(f"{u.total_tokens:,}") for _, u in rows)
+def _collect_cover_page_values(*, prompt: bool) -> dict[str, str]:
+    """Prompt the user to fill each `[...]` placeholder in `sample/template.md`.
+
+    Returns a substitutions dict the markdown builder can apply to the template
+    BEFORE prepending it to the answers. When prompting is disabled (or stdin
+    is not a TTY), we return an empty dict and the template is prepended as-is
+    with placeholders still visible (a warning is logged).
+    """
+    section("cover-page values")
+    template_text = load_template_text()
+    if template_text is None:
+        warn("sample/template.md not found — no cover page to fill")
+        return {}
+
+    placeholders = find_placeholders(template_text)
+    if not placeholders:
+        info("no [placeholders] in template — nothing to fill")
+        return {}
+
+    kv("placeholders", f"{len(placeholders)} found")
+    for ph in placeholders:
+        info(f"  • {ph}")
+
+    if not prompt:
+        warn("--no-prompt set; cover page will contain unfilled placeholders")
+        return {}
+    if not sys.stdin.isatty():
+        warn("stdin is not a TTY; skipping prompts (placeholders kept verbatim)")
+        return {}
+
+    log(f"\n  {DIM}Enter a value for each cover-page field (Enter accepts the default if shown).{RESET}\n")
+    substitutions: dict[str, str] = {}
+    for ph in placeholders:
+        default = suggested_default(ph)
+        val = ask(f"Replace {ph}", default)
+        if val:
+            substitutions[ph] = val
+        else:
+            warn(f"no value entered for {ph}; it will appear verbatim in the .md")
+    return substitutions
+
+
+def _print_token_summary(gen: TokenUsage) -> None:
+    if gen.calls == 0:
+        return
     section("tokens")
-    for name, u in rows:
-        if u.calls == 0:
-            continue
-        color = GREEN if name == "total" else CYAN
-        log(
-            f"  {color}{name:<{label_w}}{RESET}  "
-            f"{u.prompt_tokens:>{num_w},} prompt + "
-            f"{u.completion_tokens:>{num_w},} completion = "
-            f"{u.total_tokens:>{num_w},} total  "
-            f"{DIM}({u.calls} call{'s' if u.calls != 1 else ''}){RESET}"
-        )
+    log(
+        f"  {GREEN}generate{RESET}  "
+        f"{gen.prompt_tokens:,} prompt + "
+        f"{gen.completion_tokens:,} completion = "
+        f"{gen.total_tokens:,} total  "
+        f"{DIM}({gen.calls} call{'s' if gen.calls != 1 else ''}){RESET}"
+    )
 
 
 def interactive() -> int:
@@ -226,15 +249,12 @@ def interactive() -> int:
         default=DEFAULT_HUMANIZE_DENSITY,
     )
 
-    reformat_on = ask_yes_no("Run AI formatting cleanup pass?", DEFAULT_REFORMAT)
-
     section("review")
     kv("input", input_path)
     kv("output", output_path)
     kv("title", title)
     kv("model", model)
     kv("humanize", f"on ({humanize_density})")
-    kv("reformat", "on" if reformat_on else "off")
     if not ask_yes_no("\nRun with these settings?", True):
         log(f"{YELLOW}cancelled.{RESET}")
         return 0
@@ -247,7 +267,7 @@ def interactive() -> int:
         temperature=DEFAULT_TEMPERATURE,
         humanize_density=humanize_density,
         humanize_seed=None,
-        reformat=reformat_on,
         concurrency=DEFAULT_CONCURRENCY,
+        prompt_placeholders=True,
     )
     return run(args)

@@ -35,13 +35,18 @@ _H2_RE = re.compile(r"^##\s+(?:\d+\.\s*)?(.+?)\s*$")
 _HR_RE = re.compile(r"^\s*-{3,}\s*$")
 
 
-def _parse_md(text: str, fallback_title: str) -> tuple[str, list[QAPair]]:
-    """Return (title, qa_pairs) parsed from a markdown document.
+def _parse_md(text: str, fallback_title: str) -> tuple[str, list[str], list[QAPair]]:
+    """Return (title, cover_lines, qa_pairs) parsed from a markdown document.
+
+    `cover_lines` is everything that appears AFTER the first H1 (the title)
+    and BEFORE the first H2 (the first question). Typically this is the
+    assignment cover-page table prepended by `build_md`.
 
     QuestionSpec word ranges are not preserved in the markdown form, so we fill
     them with zeros — they are not used by build_pdf for rendering.
     """
     title: str | None = None
+    cover_lines: list[str] = []
     pairs: list[tuple[str, list[str]]] = []  # (question, body lines)
     current_question: str | None = None
     current_body: list[str] = []
@@ -64,7 +69,8 @@ def _parse_md(text: str, fallback_title: str) -> tuple[str, list[QAPair]]:
             continue
 
         if current_question is None:
-            # Content before any H2 — ignore (it's the document preamble).
+            # Content between the title H1 and the first question — cover page.
+            cover_lines.append(line)
             continue
 
         if _HR_RE.match(line):
@@ -81,7 +87,13 @@ def _parse_md(text: str, fallback_title: str) -> tuple[str, list[QAPair]]:
         for q, body in pairs
     ]
 
-    return (title or fallback_title), qa_pairs
+    # Trim leading/trailing blanks from the cover block.
+    while cover_lines and not cover_lines[0].strip():
+        cover_lines.pop(0)
+    while cover_lines and not cover_lines[-1].strip():
+        cover_lines.pop()
+
+    return (title or fallback_title), cover_lines, qa_pairs
 
 
 def _trim_body(lines: list[str]) -> str:
@@ -102,12 +114,17 @@ def md_to_pdf(
 ) -> str:
     """Read a markdown file and render it as PDF. Returns the actual PDF path.
 
-    If `title` is given it overrides the H1 found in the markdown.
-    `style` controls every visual choice — see :class:`PdfStyle`.
+    Pure conversion — the input markdown must already contain everything that
+    should appear in the PDF (including the cover page if any). No template
+    prepending and no placeholder substitution happens here. The render style
+    enforces the institutional spec: A4 / Portrait / 0.5in margins / Times New
+    Roman 12pt / Justified / 12-page cap (see :class:`PdfStyle`).
     """
     text = Path(input_path).read_text(encoding="utf-8")
-    parsed_title, qa_pairs = _parse_md(text, fallback_title=title or DEFAULT_TITLE)
+    parsed_title, cover_lines, qa_pairs = _parse_md(text, fallback_title=title or DEFAULT_TITLE)
     if not qa_pairs:
         raise ValueError(f"No questions (## headings) found in {input_path}.")
     final_title = title if title else parsed_title
-    return build_pdf(output_path, qa_pairs, title=final_title, style=style)
+    return build_pdf(
+        output_path, qa_pairs, title=final_title, style=style, cover_lines=cover_lines,
+    )

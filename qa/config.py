@@ -14,10 +14,7 @@ DEFAULT_HUMANIZE_DENSITY = "high"
 # Refined per-question after the first attempt.
 INFLATION_GUESS = {"low": 1.05, "med": 1.15, "high": 1.30}
 
-# AI formatting cleanup step (OpenAI call after humanize).
-DEFAULT_REFORMAT = True
-
-# Max in-flight OpenAI requests when generating / reformatting in parallel.
-# Bounded to stay inside typical per-minute tier limits; each question may
-# fire up to MAX_RETRIES+1 calls, so the effective burst can be higher.
+# Max in-flight OpenAI requests when generating in parallel. Bounded to stay
+# inside typical per-minute tier limits; each question may fire up to
+# MAX_RETRIES+1 calls, so the effective burst can be higher.
 DEFAULT_CONCURRENCY = 10

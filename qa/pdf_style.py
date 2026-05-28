@@ -18,13 +18,17 @@ Alignment = Literal["justify", "left"]
 
 @dataclass
 class PdfStyle:
+    # Institutional assignment spec (do not loosen without explicit user request):
+    #   A4 / Portrait / 0.5in margins all sides / Times New Roman 12pt / Justified
+    #   Hard cap: 12 pages per submission.
+
     # --- page ---------------------------------------------------------------
-    page_size: PageSize = "letter"
-    margin_inches: float = 0.85
+    page_size: PageSize = "a4"
+    margin_inches: float = 0.5
 
     # --- typography ---------------------------------------------------------
-    font_family: FontFamily = "helvetica"
-    body_size: float = 10.5            # answer body text size (pt)
+    font_family: FontFamily = "times"
+    body_size: float = 12.0            # answer body text size (pt) — Times New Roman 12
     line_spacing: float = 1.43         # leading multiplier (leading = body_size * line_spacing)
 
     # --- title & headings ---------------------------------------------------

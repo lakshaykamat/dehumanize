@@ -22,6 +22,8 @@ from reportlab.platypus import (
     Paragraph,
     SimpleDocTemplate,
     Spacer,
+    Table,
+    TableStyle,
 )
 
 from .config import DEFAULT_TITLE
@@ -38,6 +40,10 @@ _ITALIC_RE = re.compile(
 )
 _CODE_RE = re.compile(r"`([^`\n]+?)`")
 _HEADING_RE = re.compile(r"^\s*(#{3,4})\s+(.+?)\s*#*\s*$")
+_H1_LINE_RE = re.compile(r"^\s*#\s+.+")
+_H2_LINE_RE = re.compile(r"^\s*##\s+.+")
+_HR_LINE_RE = re.compile(r"^\s*-{3,}\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 
 
 _PAGE_SIZES = {
@@ -63,6 +69,17 @@ def _inline_markup(text: str) -> str:
     out = escape(text)
     out = _BOLD_RE.sub(lambda m: m.group(1) or m.group(2), out)
     out = _ITALIC_RE.sub(lambda m: m.group(1) or m.group(2), out)
+    out = _CODE_RE.sub(lambda m: f'<font face="Courier">{m.group(1)}</font>', out)
+    return out
+
+
+def _inline_markup_rich(text: str) -> str:
+    """Like `_inline_markup`, but keeps bold/italic as `<b>` / `<i>` tags.
+    Used in cover-page table cells where label cells (e.g. **NAME**) should
+    render visibly bold."""
+    out = escape(text)
+    out = _BOLD_RE.sub(lambda m: f"<b>{m.group(1) or m.group(2)}</b>", out)
+    out = _ITALIC_RE.sub(lambda m: f"<i>{m.group(1) or m.group(2)}</i>", out)
     out = _CODE_RE.sub(lambda m: f'<font face="Courier">{m.group(1)}</font>', out)
     return out
 
@@ -186,6 +203,109 @@ def _paragraphize(answer: str, styles: dict) -> list:
     return flowables
 
 
+def _split_table_row(line: str) -> list[str]:
+    """Split a markdown table row into trimmed cell strings."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [c.strip() for c in stripped.split("|")]
+
+
+def _build_markdown_table(md_lines: list[str], styles: dict, usable_width: float) -> Table | None:
+    """Parse a contiguous block of `| ... |` lines into a reportlab Table.
+    The pipe-only separator row (`|---|---|`) is skipped. The first non-sep
+    row is treated as the header and given a light background."""
+    rows: list[list[str]] = []
+    header_idx: int | None = None
+    for ln in md_lines:
+        if _TABLE_SEP_RE.match(ln):
+            if header_idx is None and rows:
+                header_idx = len(rows) - 1
+            continue
+        rows.append(_split_table_row(ln))
+    if not rows:
+        return None
+
+    body_style = styles["answer"]
+    para_rows = [
+        [Paragraph(_inline_markup_rich(c), body_style) for c in r]
+        for r in rows
+    ]
+    n_cols = max(len(r) for r in para_rows)
+    # Even column split across the usable text width.
+    col_width = usable_width / n_cols
+    col_widths = [col_width] * n_cols
+
+    tbl = Table(para_rows, hAlign="LEFT", colWidths=col_widths)
+    cmds = [
+        ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#9ca3af")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]
+    if header_idx is not None:
+        cmds.append(("BACKGROUND", (0, header_idx), (-1, header_idx), HexColor("#f3f4f6")))
+    tbl.setStyle(TableStyle(cmds))
+    return tbl
+
+
+def _render_cover_block(lines: list[str], styles: dict, usable_width: float) -> list:
+    """Render the cover-page lines (between title H1 and first H2) into
+    reportlab flowables. Handles paragraphs, H3/H4 headings, and markdown
+    tables. Stray H1 lines and `---` separators inside the block are skipped
+    (the title is already shown at the top of the PDF)."""
+    flowables: list = []
+    i, n = 0, len(lines)
+    prose_buf: list[str] = []
+
+    def flush_prose() -> None:
+        if not prose_buf:
+            return
+        text = " ".join(s.strip() for s in prose_buf).strip()
+        if text:
+            flowables.append(Paragraph(_inline_markup(text), styles["answer"]))
+        prose_buf.clear()
+
+    while i < n:
+        line = lines[i]
+        # Skip blanks, HR, and any leftover H1 (title already rendered).
+        if not line.strip() or _HR_LINE_RE.match(line) or _H1_LINE_RE.match(line):
+            flush_prose()
+            i += 1
+            continue
+        # Markdown table block — contiguous lines starting with `|`.
+        if line.lstrip().startswith("|"):
+            flush_prose()
+            tbl_lines: list[str] = []
+            while i < n and lines[i].lstrip().startswith("|"):
+                tbl_lines.append(lines[i])
+                i += 1
+            tbl = _build_markdown_table(tbl_lines, styles, usable_width)
+            if tbl is not None:
+                flowables.append(tbl)
+                flowables.append(Spacer(1, 10))
+            continue
+        # H3/H4 inside cover block.
+        h = _HEADING_RE.match(line)
+        if h:
+            flush_prose()
+            level = len(h.group(1))
+            style_key = "h3" if level == 3 else "h4"
+            flowables.append(Paragraph(_inline_markup(h.group(2)), styles[style_key]))
+            i += 1
+            continue
+        # Treat the line as part of a prose paragraph.
+        prose_buf.append(line)
+        i += 1
+
+    flush_prose()
+    return flowables
+
+
 def _timestamped(output_path: str) -> str:
     """Inject a timestamp before the file extension so every run writes a new
     file and never overwrites an existing one. `answers.pdf` →
@@ -203,25 +323,33 @@ def build_pdf(
     *,
     title: str = DEFAULT_TITLE,
     style: PdfStyle | None = None,
+    cover_lines: list[str] | None = None,
 ) -> str:
     """Render the Q&A pairs to a PDF. A timestamp is always appended to the
     filename so existing files are never overwritten. Returns the actual path
     written.
 
     `style` controls every visual choice. Pass `None` (default) for the
-    standard look.
+    standard look. `cover_lines`, if given, is rendered between the document
+    title and the first question — used for the assignment cover-page table.
     """
     style = style or PdfStyle()
     output_path = _timestamped(output_path)
     margin = style.margin_inches * inch
+    page_size = _PAGE_SIZES[style.page_size]
     doc = SimpleDocTemplate(
-        output_path, pagesize=_PAGE_SIZES[style.page_size],
+        output_path, pagesize=page_size,
         leftMargin=margin, rightMargin=margin,
         topMargin=margin, bottomMargin=margin,
         title=title,
     )
     styles = _build_styles(style)
     story = [Paragraph(escape(title), styles["title"])]
+
+    if cover_lines:
+        usable_width = page_size[0] - 2 * margin
+        story.extend(_render_cover_block(cover_lines, styles, usable_width))
+        story.append(Spacer(1, 10))
 
     separator_color = HexColor(style.separator_color)
 

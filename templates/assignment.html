@@ -34,7 +34,17 @@
            class="w-full rounded-md bg-ink-900 border border-ink-800 focus:border-ink-500 focus:ring-0 outline-none px-3 py-2 text-sm text-ink-100 transition">
   </div>
 
-  <div id="form-error" class="hidden rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm text-red-300"></div>
+  <div id="form-error" role="alert" class="hidden rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm text-red-300"></div>
+
+  <div id="progress-panel" aria-live="polite" class="hidden rounded-md border border-ink-800 bg-ink-900/60 p-4 space-y-2">
+    <div class="flex items-center justify-between gap-3">
+      <span id="progress-message" class="text-sm text-ink-200">Preparing…</span>
+      <span id="progress-count" class="text-xs text-ink-500"></span>
+    </div>
+    <div class="h-2 overflow-hidden rounded-full bg-ink-800">
+      <div id="progress-bar" role="progressbar" aria-label="Assignment generation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" class="h-full w-0 rounded-full bg-emerald-400 transition-all duration-300"></div>
+    </div>
+  </div>
 
   <div class="pt-2 flex items-center gap-3">
     <button type="submit"
@@ -105,6 +115,10 @@
   const form = document.getElementById('assignment-form');
   const submitBtn = document.getElementById('submit-btn');
   const errorBox = document.getElementById('form-error');
+  const progressPanel = document.getElementById('progress-panel');
+  const progressMessage = document.getElementById('progress-message');
+  const progressCount = document.getElementById('progress-count');
+  const progressBar = document.getElementById('progress-bar');
 
   const modal = document.getElementById('confirm-modal');
   const summaryTitle = document.getElementById('summary-title');
@@ -155,6 +169,86 @@
   function hideError() {
     errorBox.classList.add('hidden');
     errorBox.textContent = '';
+  }
+
+  async function responseError(response) {
+    const body = await response.json().catch(() => null);
+    if (typeof body?.detail === 'string') return body.detail;
+    if (Array.isArray(body?.detail)) {
+      return body.detail.map(item => item.msg || JSON.stringify(item)).join('; ');
+    }
+    return `Request failed (${response.status}).`;
+  }
+
+  function updateProgress(state) {
+    const total = Number(state.total) || 0;
+    const completed = Math.min(Number(state.completed) || 0, total);
+    const percent = total ? Math.round(completed * 100 / total) : 0;
+    progressMessage.textContent = state.message || 'Generating answers…';
+    progressCount.textContent = `${completed} / ${total} questions`;
+    progressBar.style.width = `${percent}%`;
+    progressBar.setAttribute('aria-valuenow', String(percent));
+  }
+
+  function downloadMarkdown(blob) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'assignment.md';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function generateAssignment() {
+    closeModal();
+    hideError();
+    progressPanel.classList.remove('hidden');
+    progressMessage.textContent = 'Submitting questions…';
+    progressCount.textContent = '';
+    progressBar.style.width = '0%';
+    progressBar.classList.remove('bg-red-500');
+    progressBar.classList.add('bg-emerald-400');
+    submitBtn.disabled = true;
+    submitBtn.classList.add('opacity-60', 'cursor-wait');
+    submitBtn.textContent = 'Generating…';
+
+    try {
+      const startResponse = await fetch('/api/assignment/jobs', {
+        method: 'POST',
+        body: new FormData(form),
+      });
+      if (!startResponse.ok) throw new Error(await responseError(startResponse));
+      const { job_id: jobId } = await startResponse.json();
+
+      while (true) {
+        const statusResponse = await fetch(`/api/assignment/jobs/${jobId}`);
+        if (!statusResponse.ok) throw new Error(await responseError(statusResponse));
+        const state = await statusResponse.json();
+        updateProgress(state);
+
+        if (state.status === 'failed') {
+          throw new Error(state.error || 'Generation failed.');
+        }
+        if (state.status === 'completed') {
+          const fileResponse = await fetch(`/api/assignment/jobs/${jobId}/download`);
+          if (!fileResponse.ok) throw new Error(await responseError(fileResponse));
+          downloadMarkdown(await fileResponse.blob());
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 700));
+      }
+    } catch (error) {
+      progressMessage.textContent = 'Generation failed.';
+      progressBar.classList.remove('bg-emerald-400');
+      progressBar.classList.add('bg-red-500');
+      showError(error.message || 'Could not generate the Markdown file.');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.classList.remove('opacity-60', 'cursor-wait');
+      submitBtn.textContent = 'Generate Markdown';
+    }
   }
 
   // word count: "300" or "400-500" (positive ints, low <= high)
@@ -229,13 +323,7 @@
     if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeModal();
   });
 
-  document.getElementById('confirm-ok').addEventListener('click', () => {
-    closeModal();
-    submitBtn.disabled = true;
-    submitBtn.classList.add('opacity-60', 'cursor-wait');
-    submitBtn.textContent = 'Generating…';
-    form.submit();
-  });
+  document.getElementById('confirm-ok').addEventListener('click', generateAssignment);
 
   form.addEventListener('submit', e => {
     e.preventDefault();

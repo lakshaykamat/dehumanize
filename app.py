@@ -20,10 +20,12 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
+import uuid
 from pathlib import Path
 
-from typing import List
+from typing import Callable, List
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -56,6 +58,9 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("app")
+
+_ASSIGNMENT_JOBS: dict[str, dict] = {}
+_ASSIGNMENT_JOBS_LOCK = threading.Lock()
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -159,6 +164,7 @@ def _run_qa_sync(
     humanize_density: str,
     humanize_seed: int | None,
     concurrency: int,
+    live_progress: Callable[[ProgressEvent], None] | None = None,
 ) -> str:
     """Synchronous end-to-end Markdown generation. Runs off the event loop.
     Returns the actual path written (build_md timestamps the filename)."""
@@ -184,6 +190,7 @@ def _run_qa_sync(
         model=model,
         temperature=temperature,
         progress=_on_progress,
+        live_progress=live_progress,
         post_transform=transform,
         initial_inflation=initial_inflation,
         concurrency=concurrency,
@@ -203,6 +210,86 @@ def _run_qa_sync(
         written, size, time.perf_counter() - t0,
     )
     return written
+
+
+def _record_assignment_progress(job_id: str, ev: ProgressEvent) -> None:
+    """Update the pollable UI status as question generation proceeds."""
+    with _ASSIGNMENT_JOBS_LOCK:
+        job = _ASSIGNMENT_JOBS.get(job_id)
+        if job is None:
+            return
+
+        if ev.kind == "start":
+            job["message"] = f"Starting question {ev.index} of {ev.total}."
+        elif ev.kind == "attempt":
+            job["message"] = f"Generating question {ev.index} of {ev.total} (attempt {ev.attempt})."
+        elif ev.kind == "retry":
+            job["message"] = f"Adjusting question {ev.index} of {ev.total} and retrying."
+        elif ev.kind == "ok":
+            job["completed"] += 1
+            job["message"] = f"Finished question {ev.index} of {ev.total}."
+        elif ev.kind == "give_up":
+            job["completed"] += 1
+            if ev.words is None:
+                job["failed_questions"] += 1
+                job["message"] = f"Question {ev.index} of {ev.total} failed. Continuing."
+            else:
+                job["message"] = f"Finished question {ev.index} of {ev.total}; kept the closest word count."
+
+
+async def _run_assignment_job(job_id: str, specs: list[QuestionSpec], title: str) -> None:
+    with _ASSIGNMENT_JOBS_LOCK:
+        job = _ASSIGNMENT_JOBS.get(job_id)
+        if job is None:
+            return
+        job["status"] = "running"
+        job["message"] = "Preparing to generate answers."
+
+    try:
+        out_dir = tempfile.mkdtemp(prefix="assignment-")
+        stub_path = os.path.join(out_dir, "assignment.md")
+        written_path = await asyncio.to_thread(
+            _run_qa_sync,
+            specs,
+            out_path=stub_path,
+            title=title,
+            model=DEFAULT_MODEL,
+            temperature=DEFAULT_TEMPERATURE,
+            humanize_density=DEFAULT_HUMANIZE_DENSITY,
+            humanize_seed=None,
+            concurrency=DEFAULT_CONCURRENCY,
+            live_progress=lambda ev: _record_assignment_progress(job_id, ev),
+        )
+        if not os.path.isfile(written_path) or os.path.getsize(written_path) == 0:
+            raise RuntimeError("Markdown generation produced no output.")
+        with _ASSIGNMENT_JOBS_LOCK:
+            job = _ASSIGNMENT_JOBS.get(job_id)
+            if job is not None:
+                job["status"] = "completed"
+                job["output_path"] = written_path
+                job["completed"] = len(specs)
+                if job["failed_questions"]:
+                    job["message"] = (
+                        f"Markdown is ready; {job['failed_questions']} question(s) had an API error."
+                    )
+                else:
+                    job["message"] = "Markdown is ready to download."
+    except MissingAPIKeyError as e:
+        log.error("assignment job %s failed: missing API key", job_id)
+        with _ASSIGNMENT_JOBS_LOCK:
+            job = _ASSIGNMENT_JOBS.get(job_id)
+            if job is not None:
+                job["status"] = "failed"
+                job["error"] = str(e)
+                job["message"] = "Generation failed."
+    except Exception as e:
+        log.exception("assignment job %s failed", job_id)
+        with _ASSIGNMENT_JOBS_LOCK:
+            job = _ASSIGNMENT_JOBS.get(job_id)
+            if job is not None:
+                job["status"] = "failed"
+                job["error"] = f"Markdown generation failed: {e}"
+                job["message"] = "Generation failed."
 
 
 # --- HTML pages -------------------------------------------------------------
@@ -314,6 +401,81 @@ async def assignment_submit(
         raise HTTPException(500, "MD generation produced no output.")
 
     log.info("assignment delivered  %s (%d bytes)", written_path, os.path.getsize(written_path))
+    return FileResponse(
+        written_path,
+        media_type="text/markdown; charset=utf-8",
+        filename="assignment.md",
+    )
+
+
+@app.post("/api/assignment/jobs", status_code=202)
+async def start_assignment_job(
+    question: List[str] = Form(...),
+    words: List[str] = Form(...),
+    title: str = Form(DEFAULT_TITLE),
+):
+    if len(question) != len(words):
+        raise HTTPException(400, "question and words field counts do not match.")
+
+    data = [
+        {"question": q.strip(), "words": w.strip()}
+        for q, w in zip(question, words)
+        if q.strip() and w.strip()
+    ]
+    if not data:
+        raise HTTPException(400, "Add at least one question with a word count.")
+
+    try:
+        specs = _parse_questions_payload(data)
+    except ValueError as e:
+        log.warning("assignment validation failed: %s", e)
+        raise HTTPException(400, str(e))
+
+    job_id = uuid.uuid4().hex
+    with _ASSIGNMENT_JOBS_LOCK:
+        _ASSIGNMENT_JOBS[job_id] = {
+            "status": "queued",
+            "total": len(specs),
+            "completed": 0,
+            "failed_questions": 0,
+            "message": "Queued for generation.",
+            "error": None,
+            "output_path": None,
+        }
+
+    log.info("assignment job %s queued  questions=%d", job_id, len(specs))
+    asyncio.create_task(_run_assignment_job(job_id, specs, title))
+    return {"job_id": job_id}
+
+
+@app.get("/api/assignment/jobs/{job_id}")
+async def assignment_job_status(job_id: str):
+    with _ASSIGNMENT_JOBS_LOCK:
+        job = _ASSIGNMENT_JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(404, "Assignment job not found.")
+        return {
+            "status": job["status"],
+            "total": job["total"],
+            "completed": job["completed"],
+            "failed_questions": job["failed_questions"],
+            "message": job["message"],
+            "error": job["error"],
+        }
+
+
+@app.get("/api/assignment/jobs/{job_id}/download")
+async def download_assignment_job(job_id: str):
+    with _ASSIGNMENT_JOBS_LOCK:
+        job = _ASSIGNMENT_JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(404, "Assignment job not found.")
+        if job["status"] != "completed" or not job["output_path"]:
+            raise HTTPException(409, "Assignment Markdown is not ready yet.")
+        written_path = job["output_path"]
+
+    if not os.path.isfile(written_path):
+        raise HTTPException(500, "Generated Markdown file is no longer available.")
     return FileResponse(
         written_path,
         media_type="text/markdown; charset=utf-8",

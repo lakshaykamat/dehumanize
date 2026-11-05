@@ -148,6 +148,7 @@ def generate_answers(
     model: str = DEFAULT_MODEL,
     temperature: float = DEFAULT_TEMPERATURE,
     progress: ProgressFn | None = None,
+    live_progress: ProgressFn | None = None,
     max_retries: int = MAX_RETRIES,
     post_transform: Callable[[str], str] | None = None,
     initial_inflation: float = 1.0,
@@ -162,7 +163,8 @@ def generate_answers(
 
     Questions are dispatched concurrently up to `concurrency` in-flight. Per-
     question progress events are buffered in the worker and flushed as one
-    contiguous block under a lock, so output stays readable.
+    contiguous block under a lock, so output stays readable. `live_progress`,
+    when provided, receives events as they happen for UI progress displays.
 
     On per-question failure, the error message is stored as the answer so the
     PDF still renders.
@@ -179,8 +181,13 @@ def generate_answers(
 
     def _work(i: int, spec: QuestionSpec) -> None:
         buf: list[ProgressEvent] = [ProgressEvent("start", i, total, spec)]
+        if live_progress:
+            live_progress(buf[0])
         def _emit(kind: str, attempt: int, words: int | None) -> None:
-            buf.append(ProgressEvent(kind, i, total, spec, attempt=attempt, words=words))
+            ev = ProgressEvent(kind, i, total, spec, attempt=attempt, words=words)
+            buf.append(ev)
+            if live_progress:
+                live_progress(ev)
         try:
             answer = ask_openai(
                 client, model, spec, temperature,
@@ -192,7 +199,7 @@ def generate_answers(
             )
         except Exception as e:
             answer = f"(Error generating answer: {e})"
-            buf.append(ProgressEvent("give_up", i, total, spec, attempt=0, words=None))
+            _emit("give_up", 0, None)
         answers[i - 1] = answer
         if progress:
             with flush_lock:

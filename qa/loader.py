@@ -13,20 +13,26 @@ def _parse_words(value, item_idx: int, path: str) -> tuple[int, int]:
     Accepts:
         "400-500"   range string
         400         single int (treated as exact: min == max)
+        "400"       single count from an HTML form (also exact)
     """
     if isinstance(value, str):
         s = value.strip()
-        if "-" not in s:
+        # HTML form fields arrive as strings, including a single count such
+        # as "300". Treat that the same as the JSON integer 300.
+        if s.isdecimal():
+            value = int(s)
+        elif "-" not in s:
             raise ValueError(
-                f"{path}: item {item_idx} 'words' must be a range like '400-500' or an int.")
-        lo_s, hi_s = s.split("-", 1)
-        try:
-            lo, hi = int(lo_s.strip()), int(hi_s.strip())
-        except ValueError:
-            raise ValueError(f"{path}: item {item_idx} 'words' has non-integer bounds: {value!r}.")
-        if lo <= 0 or hi <= 0 or hi < lo:
-            raise ValueError(f"{path}: item {item_idx} 'words' invalid range: {value!r}.")
-        return lo, hi
+                f"{path}: item {item_idx} 'words' must be a number like '300' or a range like '400-500'.")
+        else:
+            lo_s, hi_s = s.split("-", 1)
+            try:
+                lo, hi = int(lo_s.strip()), int(hi_s.strip())
+            except ValueError:
+                raise ValueError(f"{path}: item {item_idx} 'words' has non-integer bounds: {value!r}.")
+            if lo <= 0 or hi <= 0 or hi < lo:
+                raise ValueError(f"{path}: item {item_idx} 'words' invalid range: {value!r}.")
+            return lo, hi
     if isinstance(value, int) and not isinstance(value, bool):
         if value <= 0:
             raise ValueError(f"{path}: item {item_idx} 'words' must be positive.")
@@ -46,7 +52,8 @@ def read_questions(path: str) -> list[QuestionSpec]:
 
         {"title": "...", "questions": [ ...same items... ]}
 
-    `words` accepts either a range string ("400-500") or a single int.
+    `words` accepts a range string ("400-500"), a single int, or a numeric
+    string from an HTML form.
     """
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
